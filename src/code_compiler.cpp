@@ -175,11 +175,12 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 					auto target = X86_REL_ADDR(insn[0]);
 					if (functions.count(target)) {
 						outsstr << functions[target] << std::endl;
-						goto finish;
+					} else {
+						outsstr << "0x" << std::hex << (target - section_address) << std::endl;
 					}
+				} else {
+					outsstr << insn->op_str << std::endl;
 				}
-				outsstr << insn->op_str << std::endl;
-	finish:
 				idx += insn->size;
 			}
 			code_output = outsstr.str();
