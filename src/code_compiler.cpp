@@ -132,12 +132,12 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 	if (!executionEngine->hasError()) {
 		auto& v = module->getValueSymbolTable();
 		// First we're going to loop through to capture the function names, and their start
-		std::unordered_map<uintptr_t, std::string> functions;
+		std::unordered_map<uint32_t, std::string> functions;
 		for (auto& symbol : v) {
 			auto func = executionEngine->getFunctionAddress(symbol.getKeyData());
 			for (auto& [section, size] : section_sizes) {
 				if (func >= section && func < section + size) {
-					functions.insert( {func, symbol.getKeyData() } );
+					functions.insert( {func - section, symbol.getKeyData() } );
 					break;
 				}
 			}
@@ -167,8 +167,8 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 			std::stringstream outsstr;
 			uint32_t idx = 0;
 			while (cs_disasm_iter(current_handle, &insn_addr, &size, &address, insn)) {
-				if (functions.count(insn->address))
-					outsstr << "// " << functions[insn->address] << std::endl;
+				if (functions.count(insn->address - section_address))
+					outsstr << "// " << functions[insn->address - section_address] << std::endl;
 				std::stringstream sstr;
 				for (auto i = 0; i < insn->size; ++i) {
 					if (size == 0) {
@@ -184,12 +184,11 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 				// Checking here if it's a call or jump to one of our created functions to replace the address with the name
 				if ((cs_insn_group(current_handle, insn, CS_GRP_CALL) || cs_insn_group(current_handle, insn, CS_GRP_JUMP)) &&
 						cs_op_count(current_handle, insn, CS_OP_IMM)) {
-					auto target = X86_REL_ADDR(insn[0]);
+					const uint32_t target = X86_REL_ADDR(insn[0]) - section_address;
 					if (functions.count(target)) {
 						outsstr << functions[target] << std::endl;
 					} else {
-						outsstr << "0x" << std::hex << (disassemble32 ? static_cast<uint32_t>(target - section_address) 
-								: (target - section_address)) << std::endl;
+						outsstr << "0x" << std::hex << target << std::endl;
 					}
 				} else {
 					outsstr << insn->op_str << std::endl;
