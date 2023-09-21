@@ -19,6 +19,7 @@
 #include "directx.hpp"
 
 csh handle;
+csh handle32;
 std::string code_content{};
 std::string code_output{};
 std::string compiler_output{};
@@ -153,6 +154,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 	cs_open(CS_ARCH_X86, CS_MODE_64, &handle);
 	cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+	cs_open(CS_ARCH_X86, CS_MODE_32, &handle32);
+	cs_option(handle32, CS_OPT_DETAIL, CS_OPT_ON);
 
 	// Initialize here for test code to be loaded immediately
 	code_content = 
@@ -325,6 +329,7 @@ int test2(SomeStruct* pStrc) {
 	llvm::llvm_shutdown();
 
 	cs_close(&handle);
+	cs_close(&handle32);
 
 	return EXIT_SUCCESS;
 }

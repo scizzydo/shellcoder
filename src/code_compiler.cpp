@@ -6,6 +6,7 @@
 #include <capstone/capstone.h>
 
 extern csh handle;
+extern csh handle32;
 extern std::string code_output;
 extern std::string compiler_output;
 
@@ -53,10 +54,20 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 
 	std::vector<const char*> items;
 	// Check if we're passing a triple already
+	bool disassemble32 = sizeof(void*) == 0x4;
 	const auto contains_triple = std::any_of(args.begin(), args.end(), [](const auto& arg) { 
 												return arg.find("-triple") != std::string::npos; });
 	if (!contains_triple)
 		args.insert(args.begin(), "-triple=" + llvm::sys::getProcessTriple());
+	else {
+		for (auto iter = args.begin(); iter != args.end(); ++iter) {
+			if (iter->find("-triple") != std::string::npos) {
+				++iter;
+				disassemble32 = iter->find("i386") != std::string::npos;
+				break;
+			}
+		}
+	}
 
 	for (auto& arg : args) {
 		// Per documents, should not contain cc1:
@@ -134,14 +145,15 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 
 		// There should only be 1 section (.text) but who knows. Just loop all
 		for (auto& [section_address, section_size] : section_sizes) {
-			auto insn = cs_malloc(handle);
+			auto current_handle = disassemble32 ? handle32 : handle;
+			auto insn = cs_malloc(current_handle);
 			uintptr_t address = section_address;
 			auto size = section_size;
 			auto insn_addr = reinterpret_cast<const uint8_t*>(address);
 			// First pass will give us the info for our padding in the output pane
 			uint32_t longest_instruction = 0;
 			uint32_t longest_mnemonic = 0;
-			while (cs_disasm_iter(handle, &insn_addr, &size, &address, insn)) {
+			while (cs_disasm_iter(current_handle, &insn_addr, &size, &address, insn)) {
 				if (insn->size > longest_instruction)
 					longest_instruction = insn->size;
 				auto len = strlen(insn->mnemonic);
@@ -154,7 +166,7 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 			insn_addr = reinterpret_cast<const uint8_t*>(address);
 			std::stringstream outsstr;
 			uint32_t idx = 0;
-			while (cs_disasm_iter(handle, &insn_addr, &size, &address, insn)) {
+			while (cs_disasm_iter(current_handle, &insn_addr, &size, &address, insn)) {
 				if (functions.count(insn->address))
 					outsstr << "// " << functions[insn->address] << std::endl;
 				std::stringstream sstr;
@@ -170,13 +182,14 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 				}
 				outsstr << std::format("{:{}}//{:3x}: {:{}}\t", sstr.str(), longest_instruction * 6, idx, insn->mnemonic, longest_mnemonic);
 				// Checking here if it's a call or jump to one of our created functions to replace the address with the name
-				if ((cs_insn_group(handle, insn, CS_GRP_CALL) || cs_insn_group(handle, insn, CS_GRP_JUMP)) &&
-						cs_op_count(handle, insn, CS_OP_IMM)) {
+				if ((cs_insn_group(current_handle, insn, CS_GRP_CALL) || cs_insn_group(current_handle, insn, CS_GRP_JUMP)) &&
+						cs_op_count(current_handle, insn, CS_OP_IMM)) {
 					auto target = X86_REL_ADDR(insn[0]);
 					if (functions.count(target)) {
 						outsstr << functions[target] << std::endl;
 					} else {
-						outsstr << "0x" << std::hex << (target - section_address) << std::endl;
+						outsstr << "0x" << std::hex << (disassemble32 ? static_cast<uint32_t>(target - section_address) 
+								: (target - section_address)) << std::endl;
 					}
 				} else {
 					outsstr << insn->op_str << std::endl;
