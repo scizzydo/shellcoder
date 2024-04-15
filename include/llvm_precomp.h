@@ -12,7 +12,7 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/Registry.h>
-#include <llvm/Support/Host.h>
+#include <llvm/TargetParser/Host.h>
 #include <llvm/IR/ValueSymbolTable.h>
 
 #include <clang/Basic/DiagnosticOptions.h>

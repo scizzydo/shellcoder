@@ -1,16 +1,30 @@
 #include "code_compiler.h"
 
+#ifdef __APPLE__
+#include <fmt/core.h>
+#else
 #include <format>
+#endif
 #include <sstream>
 #include <iostream>
 #include <capstone/capstone.h>
 
 extern csh handle;
+#ifndef __arm64__
 extern csh handle32;
+#endif
 extern std::string code_output;
 extern std::string compiler_output;
 
+#if __APPLE__
+#if __WORDSIZE == 64
+std::map<uint64_t, size_t> section_sizes{};
+#else
+std::map<uint32_t, size_t> section_sizes{};
+#endif
+#else
 std::map<uintptr_t, size_t> section_sizes{};
+#endif
 
 /*
 	JIT Event Listener registered below to capture the size & address of the sections created. Without this,
@@ -27,11 +41,17 @@ public:
 				auto name = section.getName();
 				auto address = L.getSectionLoadAddress(section);
 				// Just like in a normal executable, it'll create the sections like .text etc.
+#ifdef __APPLE__
+                if (name && strcmp(name->data(), "__text") == 0)
+#else
 				if (name && strcmp(name->data(), ".text") == 0)
+#endif
 					section_sizes[address] = size;
 			}
 		}
 	}
+private:
+    void anchor() override {}
 };
 
 bool generate_shellcode(std::string contents, std::vector<std::string> args) {
@@ -54,12 +74,15 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 
 	std::vector<const char*> items;
 	// Check if we're passing a triple already
+#ifndef __arm64__
 	bool disassemble32 = sizeof(void*) == 0x4;
+#endif
 	const auto contains_triple = std::any_of(args.begin(), args.end(), [](const auto& arg) { 
 												return arg.find("-triple") != std::string::npos; });
 	if (!contains_triple)
 		args.insert(args.begin(), "-triple=" + llvm::sys::getProcessTriple());
 	else {
+#ifndef __arm64__
 		for (auto iter = args.begin(); iter != args.end(); ++iter) {
 			if (iter->find("-triple") != std::string::npos) {
 				++iter;
@@ -67,6 +90,7 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 				break;
 			}
 		}
+#endif
 	}
 
 	for (auto& arg : args) {
@@ -111,8 +135,12 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 		.setEngineKind(llvm::EngineKind::JIT)
 		.setVerifyModules(true)
 		.setRelocationModel(llvm::Reloc::Static)
+#ifdef __APPLE__
+        .setCodeModel(llvm::CodeModel::Small)
+#else
 		// Prevents it from adding stuff like memset/memcpy otherwise should be Small
 		.setCodeModel(llvm::CodeModel::Kernel)
+#endif
 		.setMCJITMemoryManager(std::make_unique<llvm::SectionMemoryManager>())
 		.create());
 
@@ -145,9 +173,13 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 
 		// There should only be 1 section (.text) but who knows. Just loop all
 		for (auto& [section_address, section_size] : section_sizes) {
+#ifdef __arm64__
+            auto current_handle = handle;
+#else
 			auto current_handle = disassemble32 ? handle32 : handle;
+#endif
 			auto insn = cs_malloc(current_handle);
-			uintptr_t address = section_address;
+			auto address = section_address;
 			auto size = section_size;
 			auto insn_addr = reinterpret_cast<const uint8_t*>(address);
 			// First pass will give us the info for our padding in the output pane
@@ -173,15 +205,42 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 				for (auto i = 0; i < insn->size; ++i) {
 					if (size == 0) {
 						if (i == insn->size - 1)
-							sstr << std::format("0x{:02X}", insn->bytes[i]);
+							sstr <<
+#ifdef __APPLE__
+                                fmt::
+#else
+                                std::
+#endif
+                                format("0x{:02X}", insn->bytes[i]);
 						else
-							sstr << std::format("0x{:02X}, ", insn->bytes[i]);
+							sstr << 
+#ifdef __APPLE__
+                                fmt::
+#else
+                                std::
+#endif
+                                format("0x{:02X}, ", insn->bytes[i]);
 					} else {
-						sstr << std::format("0x{:02X}, ", insn->bytes[i]);
+						sstr << 
+#ifdef __APPLE__
+                            fmt::
+#else
+                            std::
+#endif
+                            format("0x{:02X}, ", insn->bytes[i]);
 					}
 				}
-				outsstr << std::format("{:{}}//{:3x}: {:{}}\t", sstr.str(), longest_instruction * 6, idx, insn->mnemonic, longest_mnemonic);
+				outsstr << 
+#ifdef __APPLE__
+                        fmt::
+#else
+                        std::
+#endif
+                        format("{:{}}//{:3x}: {:{}}\t", sstr.str(), longest_instruction * 6, idx, insn->mnemonic, longest_mnemonic);
 				// Checking here if it's a call or jump to one of our created functions to replace the address with the name
+#ifdef __arm64__
+                outsstr << insn->op_str << std::endl;
+#else
 				if ((cs_insn_group(current_handle, insn, CS_GRP_CALL) || cs_insn_group(current_handle, insn, CS_GRP_JUMP)) &&
 						cs_op_count(current_handle, insn, CS_OP_IMM)) {
 					const uint32_t target = X86_REL_ADDR(insn[0]) - section_address;
@@ -193,6 +252,7 @@ bool generate_shellcode(std::string contents, std::vector<std::string> args) {
 				} else {
 					outsstr << insn->op_str << std::endl;
 				}
+#endif
 				idx += insn->size;
 			}
 			code_output = outsstr.str();

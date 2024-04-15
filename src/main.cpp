@@ -1,32 +1,58 @@
+#ifdef __APPLE__
+#include <cstdlib>
+#include <cstdint>
+#include <fmt/core.h>
+#include <fmt/chrono.h>
+#else
 #include <Windows.h>
-#include <algorithm>
-#include <tchar.h>
 #include <winuser.h>
+#include <tchar.h>
+#include <format>
+#endif
+
+#include <algorithm>
 #include <chrono>
+#include <thread>
 #include <iostream>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h> // For the horizontal splitter
 #include <imgui.h>
 #include <imgui_stdlib.h>
+#ifdef __APPLE__
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#else
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
+#endif
 
 #include <capstone/capstone.h>
 
-#include "resource.h"
 #include "code_compiler.h"
+#ifdef __APPLE__
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#else
+#include "resource.h"
 #include "directx.hpp"
+#endif
 
 csh handle;
+#ifndef __arm64__
 csh handle32;
+#endif
+
 std::string code_content{};
 std::string code_output{};
 std::string compiler_output{};
+
+#ifndef __APPLE__
 std::unique_ptr<directx> pdx = nullptr;
 RECT screen_rect{};
 LONG resize_width;
 LONG resize_height;
+#endif
 
 namespace ImGui {
 	bool Splitter(bool split_vertically, float thickness, float* size1, float* size2, float min_size1, float min_size2, float splitter_long_axis_size = -1.0f) {
@@ -40,6 +66,10 @@ namespace ImGui {
 	}
 };
 
+#define MIN_WINDOW_WIDTH 750
+#define MIN_WINDOW_HEIGHT 400
+
+#ifndef __APPLE__
 bool IsForegroundProcess(DWORD pid) {
 	auto hwnd = GetForegroundWindow();
 	if (!hwnd)
@@ -49,6 +79,7 @@ bool IsForegroundProcess(DWORD pid) {
 		return false;
 	return foreground_pid == pid;
 }
+#endif
 
 namespace string {
 	void left_trim(std::string& s) {
@@ -78,6 +109,324 @@ namespace string {
 	}
 };
 
+#ifdef __APPLE__
+static void glfw_error_callback(int error, const char* description) {
+    fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+    exit(EXIT_FAILURE);
+}
+
+int32_t posx = 0, width = 0;
+int32_t posy = 0, height = 0;
+int32_t offset_cpx = 0, offset_cpy = 0;
+int32_t cp_x = 0, cp_y = 0;
+int32_t ccp_x = 0, ccp_y = 0;
+
+enum class WindowEvent : int32_t {
+    NONE = 0,
+    MOVE,
+    RESIZE_LEFT,
+    RESIZE_RIGHT,
+    RESIZE_TOP,
+    RESIZE_BOTTOM,
+    RESIZE_BOTTOMLEFT,
+    RESIZE_TOPLEFT,
+    RESIZE_BOTTOMRIGHT,
+    RESIZE_TOPRIGHT
+};
+WindowEvent buttonEvent = WindowEvent::NONE;
+
+enum class ResizeArrow : int {
+    NONE = 0,
+    HORIZONTAL,
+    VERTICAL,
+    NESW,
+    NWSE,
+};
+ResizeArrow cursorSet = ResizeArrow::NONE;
+
+GLFWwindow* window = nullptr;
+GLFWcursor* hcursor = nullptr;
+GLFWcursor* vcursor = nullptr;
+GLFWcursor* neswcursor = nullptr;
+GLFWcursor* nwsecursor = nullptr;
+
+#define RESIZE_THRESHOLD 7
+static void cursor_position_callback(GLFWwindow* window, double x, double y) {
+    switch (buttonEvent) {
+    case WindowEvent::MOVE:
+    {
+        offset_cpx = static_cast<int>(x - cp_x);
+        offset_cpy = static_cast<int>(y - cp_y);
+        break;
+    }
+    case WindowEvent::RESIZE_BOTTOMLEFT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width - diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = width - MIN_WINDOW_WIDTH;
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height + diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = MIN_WINDOW_HEIGHT - height;
+        break;
+    }
+    case WindowEvent::RESIZE_TOPLEFT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width - diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = width - MIN_WINDOW_WIDTH;
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height - diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = height - MIN_WINDOW_HEIGHT;
+        break;
+    }
+    case WindowEvent::RESIZE_BOTTOMRIGHT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width + diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = MIN_WINDOW_WIDTH - width;
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height + diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = MIN_WINDOW_HEIGHT - height;
+        break;
+    }
+    case WindowEvent::RESIZE_TOPRIGHT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width + diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = MIN_WINDOW_WIDTH - width;
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height - diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = height - MIN_WINDOW_HEIGHT;
+        break;
+    }
+    case WindowEvent::RESIZE_RIGHT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width + diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = MIN_WINDOW_WIDTH - width;
+        break;
+    }
+    case WindowEvent::RESIZE_LEFT:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffx = static_cast<int>(x - cp_x);
+        if (width - diffx >= MIN_WINDOW_WIDTH)
+            offset_cpx = diffx;
+        else
+            offset_cpx = width - MIN_WINDOW_WIDTH;
+        break;
+    }
+    case WindowEvent::RESIZE_TOP:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height - diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = height - MIN_WINDOW_HEIGHT;
+        break;
+    }
+    case WindowEvent::RESIZE_BOTTOM:
+    {
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        auto diffy = static_cast<int>(y - cp_y);
+        if (height + diffy >= MIN_WINDOW_HEIGHT)
+            offset_cpy = diffy;
+        else
+            offset_cpy = MIN_WINDOW_HEIGHT - height;
+        break;
+    }
+    default:
+    {   
+        int posx = static_cast<int>(x), posy = static_cast<int>(y);
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        if (posx >= 0 && posy >= 0 && posx < width && posy < height) {
+            if (posx < RESIZE_THRESHOLD) {
+                if (posy <= 3) {
+                    if (cursorSet != ResizeArrow::NWSE) {
+                        glfwSetCursor(window, nwsecursor);
+                        cursorSet = ResizeArrow::NWSE;
+                    }
+                } else if (posy > height - RESIZE_THRESHOLD) {
+                    if (cursorSet != ResizeArrow::NESW) {
+                        glfwSetCursor(window, neswcursor);
+                        cursorSet = ResizeArrow::NESW;
+                    }
+                } else {
+                    if (cursorSet != ResizeArrow::HORIZONTAL) {
+                        glfwSetCursor(window, hcursor);
+                        cursorSet = ResizeArrow::HORIZONTAL;
+                    }
+                }
+            } else if (posx > width - RESIZE_THRESHOLD) {
+                if (posy <= 3) {
+                    if (cursorSet != ResizeArrow::NESW) {
+                        glfwSetCursor(window, neswcursor);
+                        cursorSet = ResizeArrow::NESW;
+                    }
+                } else if (posy > height - RESIZE_THRESHOLD) {
+                    if (cursorSet != ResizeArrow::NWSE) {
+                        glfwSetCursor(window, nwsecursor);
+                        cursorSet = ResizeArrow::NWSE;
+                    }
+                } else {
+                    if (cursorSet != ResizeArrow::HORIZONTAL) {
+                        glfwSetCursor(window, hcursor);
+                        cursorSet = ResizeArrow::HORIZONTAL;
+                    }
+                }
+            } else if (posy <= 3) {
+                if (cursorSet != ResizeArrow::VERTICAL) {
+                    glfwSetCursor(window, vcursor);
+                    cursorSet = ResizeArrow::VERTICAL;
+                }
+            } else if (posy > height - RESIZE_THRESHOLD) {
+                if (cursorSet != ResizeArrow::VERTICAL) {
+                    glfwSetCursor(window, vcursor);
+                    cursorSet = ResizeArrow::VERTICAL;
+                }
+            } else {
+                if (cursorSet != ResizeArrow::NONE) {
+                    glfwSetCursor(window, NULL);
+                    cursorSet = ResizeArrow::NONE;
+                }
+            }
+        }
+        break;
+    }
+    }
+}
+
+static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    if(button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        double x, y;
+        glfwGetCursorPos(window, &x, &y);
+        int width = 0, height = 0;
+        glfwGetWindowSize(window, &width, &height);
+        if (y > 3.0 && x > RESIZE_THRESHOLD && x < width - RESIZE_THRESHOLD && y <= ImGui::GetFrameHeight()) {
+            if (cursorSet != ResizeArrow::NONE) {
+                glfwSetCursor(window, NULL);
+                cursorSet = ResizeArrow::NONE;
+            }
+            buttonEvent = WindowEvent::MOVE;
+            cp_x = floor(x);
+            cp_y = floor(y);
+        } else {
+            int posx = static_cast<int>(x), posy = static_cast<int>(y);
+            if (posx < RESIZE_THRESHOLD) {
+                if (posy < 3) {
+                    buttonEvent = WindowEvent::RESIZE_TOPLEFT;
+                } else if (posy > height - RESIZE_THRESHOLD) {
+                    buttonEvent = WindowEvent::RESIZE_BOTTOMLEFT;
+                } else {
+                    buttonEvent = WindowEvent::RESIZE_LEFT;
+                }
+            } else if (posx > width - RESIZE_THRESHOLD) {
+                if (posy <= 3) {
+                    buttonEvent = WindowEvent::RESIZE_TOPRIGHT;
+                } else if (posy > height - RESIZE_THRESHOLD) {
+                    buttonEvent = WindowEvent::RESIZE_BOTTOMRIGHT;
+                } else {
+                    buttonEvent = WindowEvent::RESIZE_RIGHT;
+                }
+            } else if (posy <= 3) {
+                buttonEvent = WindowEvent::RESIZE_TOP;
+            } else if (posy > height - RESIZE_THRESHOLD) {
+                buttonEvent = WindowEvent::RESIZE_BOTTOM;
+            }
+            cp_x = floor(x);
+            cp_y = floor(y);
+        }
+    }
+    if(button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+        buttonEvent = WindowEvent::NONE;
+        if (cursorSet != ResizeArrow::NONE) {
+            glfwSetCursor(window, NULL);
+            cursorSet = ResizeArrow::NONE;
+        }
+        cp_x = 0;
+        cp_y = 0;
+    }
+}
+
+static void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
+}
+
+int main(int argc, char** argv) {
+    glfwSetErrorCallback(glfw_error_callback);
+    if (!glfwInit()) {
+        fprintf(stderr, "Failed to initialize glfw! 0x%X\n", glfwGetError(NULL));
+        return EXIT_FAILURE;
+    }
+
+    const char* glsl_version = "#version 150";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+    window = glfwCreateWindow(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, "shellcoder", NULL, NULL);
+    if (!window) {
+        fprintf(stderr, "Failed to create glfw window! 0x%X\n", glfwGetError(NULL));
+        glfwTerminate();
+        return EXIT_FAILURE;
+    }
+
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, cursor_position_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+
+    glfwMakeContextCurrent(window);
+
+    auto status = gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress));
+    if (!status) {
+        fprintf(stderr, "Failed to load GLLoader! 0x%X\n", status);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return EXIT_FAILURE;
+    }
+
+    hcursor = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
+    vcursor = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
+    neswcursor = glfwCreateStandardCursor(GLFW_RESIZE_NESW_CURSOR);
+    nwsecursor = glfwCreateStandardCursor(GLFW_RESIZE_NWSE_CURSOR);
+#else
 LRESULT WINAPI WndProc(HWND, UINT, WPARAM, LPARAM);
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
@@ -99,8 +448,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 	pdx.reset(new directx());
 	auto scale = pdx->GetDPIScale();
-	auto x = static_cast<int32_t>(750.f * scale);
-	auto y = static_cast<int32_t>(400.f * scale);
+	auto x = static_cast<int32_t>(MIN_WINDOW_WIDTH * scale);
+	auto y = static_cast<int32_t>(MIN_WINDOW_HEIGHT * scale);
 	screen_rect.right = x;
 	screen_rect.bottom = y;
 
@@ -115,14 +464,23 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 	MSG msg;
 	ZeroMemory(&msg, sizeof(msg));
+#endif
 
 	ImGui::CreateContext();
 
 	auto& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 	io.IniFilename = NULL;
 
+#ifdef __APPLE__
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+
+    glfwGetWindowSize(window, &width, &height);
+#else
 	ImGui_ImplWin32_Init(hwnd);
 	ImGui_ImplDX11_Init(pdx->GetDevice(), pdx->GetDeviceContext());
+#endif
 
 	ImGui::StyleColorsLight();
 	auto& style = ImGui::GetStyle();
@@ -152,11 +510,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	llvm::InitializeNativeTargetAsmPrinter();
 	llvm::InitializeNativeTargetAsmParser();
 
+#ifdef __arm64__
+    cs_open(CS_ARCH_AARCH64, CS_MODE_ARM, &handle);
+#else
 	cs_open(CS_ARCH_X86, CS_MODE_64, &handle);
-	cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
-
 	cs_open(CS_ARCH_X86, CS_MODE_32, &handle32);
 	cs_option(handle32, CS_OPT_DETAIL, CS_OPT_ON);
+#endif
+	cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
 
 	// Initialize here for test code to be loaded immediately
 	code_content = 
@@ -184,8 +545,10 @@ int test2(SomeStruct* pStrc) {
 	if (code_content.size())
 		generate_shellcode(code_content, compiler_flags);
 	
+#ifndef __APPLE__
 	ShowWindow(hwnd, SW_SHOW);
 	UpdateWindow(hwnd);
+#endif
 
 	const ImVec2 zz{0.f,0.f};
 	const float clear[]{0.f, 0.f, 0.f, 0.f};
@@ -193,22 +556,39 @@ int test2(SomeStruct* pStrc) {
 	const auto frame_padding_y_x2 = ImGui::GetStyle().FramePadding.y * 2.f;
 	float horizontal_size = 0.4f;
 
-	const auto footer = std::format("scizzydo \u00A9 2020-{:%Y}", std::chrono::system_clock::now());
+	const auto footer = 
+#ifdef __APPLE__
+        fmt::
+#else
+        std::
+#endif
+        format("scizzydo \u00A9 2020-{:%Y}", std::chrono::system_clock::now());
 	
+#ifndef __APPLE__
 	const auto pid = GetCurrentProcessId();
+#endif
 	auto start = std::chrono::steady_clock::now();
 	
-	
+#ifdef __APPLE__
+    while (!glfwWindowShouldClose(window)) {
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED))
+            continue;
+#else
 	while (msg.message != WM_QUIT) {
 		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 			continue;
 		}
+#endif
 		auto now = std::chrono::steady_clock::now();
 		auto diff = now - start;
 		std::chrono::steady_clock::time_point end;
+#ifdef __APPLE__
+        if (glfwGetWindowAttrib(window, GLFW_FOCUSED))
+#else
 		if (IsForegroundProcess(pid))
+#endif
 			// We are foreground, so rendering at ~24 frames a second
 			end = now + std::chrono::milliseconds(41);
 		else
@@ -217,6 +597,93 @@ int test2(SomeStruct* pStrc) {
 		if (diff >= std::chrono::seconds(1))
 			start = now;
 
+#ifdef __APPLE__
+        if(buttonEvent != WindowEvent::NONE) {
+            switch(buttonEvent) {
+                case WindowEvent::MOVE:
+                {
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwSetWindowPos(window, posx + offset_cpx, posy + offset_cpy);
+                    break;
+                }
+                case WindowEvent::RESIZE_LEFT:
+                {
+                    if (!offset_cpx) break;
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwGetWindowSize(window, &width, &height);
+                    posx += offset_cpx;
+                    glfwSetWindowPos(window, posx, posy);
+                    width -= offset_cpx;
+                    glfwSetWindowSize(window, width, height);
+                    break;
+                }
+                case WindowEvent::RESIZE_RIGHT:
+                {
+                    glfwGetWindowSize(window, &width, &height);
+                    width += offset_cpx;
+                    glfwSetWindowSize(window, width, height);
+                    cp_x += offset_cpx;
+                    break;
+                }
+                case WindowEvent::RESIZE_TOP:
+                {
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowPos(window, posx, posy + offset_cpy);
+                    glfwSetWindowSize(window, width, height - offset_cpy);
+                    break;
+                }
+                case WindowEvent::RESIZE_BOTTOM:
+                {
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowSize(window, width, height + offset_cpy);
+                    cp_y += offset_cpy;
+                    break;
+                }
+                case WindowEvent::RESIZE_TOPLEFT:
+                {
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowPos(window, posx + offset_cpx, posy + offset_cpy);
+                    glfwSetWindowSize(window, width - offset_cpx, height - offset_cpy);
+                    break;
+                }
+                case WindowEvent::RESIZE_TOPRIGHT:
+                {
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowPos(window, posx, posy + offset_cpy);
+                    glfwSetWindowSize(window, width + offset_cpx, height - offset_cpy);
+                    cp_x += offset_cpx;
+                    break;
+                }
+                case WindowEvent::RESIZE_BOTTOMLEFT:
+                {
+                    glfwGetWindowPos(window, &posx, &posy);
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowPos(window, posx + offset_cpx, posy);
+                    glfwSetWindowSize(window, width - offset_cpx, height + offset_cpy);
+                    cp_y += offset_cpy;
+                    break;
+                }
+                case WindowEvent::RESIZE_BOTTOMRIGHT:
+                {
+                    glfwGetWindowSize(window, &width, &height);
+                    glfwSetWindowSize(window, width + offset_cpx, height + offset_cpy);
+                    cp_x += offset_cpx;
+                    cp_y += offset_cpy;
+                    break;
+                }
+                default: break;
+            }
+            offset_cpx = 0;
+            offset_cpy = 0;
+        }
+        glfwPollEvents();
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+#else
 		if (resize_width != 0 && resize_height != 0) {
 			ImGui_ImplDX11_InvalidateDeviceObjects();
 			pdx->CleanupRenderTarget();
@@ -228,26 +695,44 @@ int test2(SomeStruct* pStrc) {
 
 		ImGui_ImplDX11_NewFrame();
 		ImGui_ImplWin32_NewFrame();
+#endif
 		ImGui::NewFrame();
 		ImGui::SetNextWindowPos(zz);
+#ifdef __APPLE__
+		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)));
+#else
 		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(screen_rect.right), static_cast<float>(screen_rect.bottom)));
+#endif
 		if (ImGui::Begin("shellcoder", nullptr, 
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | 
 			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | 
 			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoBringToFrontOnFocus)) {
 			//auto& style = ImGui::GetStyle();
 			if (ImGui::BeginMenuBar()) {
+#ifdef __APPLE__
+				auto startx = (width - ImGui::CalcTextSize("X").x * 2 - frame_padding_x_x8);
+#else
 				auto startx = (screen_rect.right - ImGui::CalcTextSize("X").x * 2 - frame_padding_x_x8);
+#endif
 				ImGui::SetCursorPosX(startx);
+#ifdef __APPLE__
+                if (ImGui::MenuItem("_")) glfwIconifyWindow(window);
+                if (ImGui::MenuItem("X")) glfwSetWindowShouldClose(window, true);
+#else
 				if (ImGui::MenuItem("_")) ShowWindow(hwnd, SW_MINIMIZE);
 				if (ImGui::MenuItem("X")) msg.message = WM_QUIT;
+#endif
 				ImGui::EndMenuBar();
 			}
 			auto region = ImGui::GetContentRegionAvail();
 			const auto width = region.x;
 			const auto half_width = width / 2.f;
 			auto footer_size = ImGui::CalcTextSize(footer.c_str());
+#ifdef __APPLE__
+			const auto content_bottom = height - footer_size.y - frame_padding_y_x2;
+#else
 			const auto content_bottom = screen_rect.bottom - footer_size.y - frame_padding_y_x2;
+#endif
 			auto current = ImGui::GetCursorPos();
 			ImGui::SetCursorPos(ImVec2(half_width - footer_size.x / 2.f, content_bottom + style.FramePadding.y));
 			ImGui::TextUnformatted(footer.c_str());
@@ -314,26 +799,48 @@ int test2(SomeStruct* pStrc) {
 		}
 		ImGui::EndFrame();
 		ImGui::Render();
+#ifdef __APPLE__
+        int display_w, display_h;
+        glfwGetFramebufferSize(window, &display_w, &display_h);
+        glViewport(0, 0, display_w, display_h);
+        glClearColor(clear[0], clear[1], clear[2], clear[3]);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(window);
+#else
 		auto pContext = pdx->GetDeviceContext();
 		auto pRenderTargetView = pdx->GetRenderTargetView();
 		pContext->OMSetRenderTargets(1, &pRenderTargetView, NULL);
 		pContext->ClearRenderTargetView(pRenderTargetView, clear);
 		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 		pdx->GetSwapChain()->Present(0, 0);
+#endif
 		std::this_thread::sleep_until(end);
 	}
 
+#ifdef __APPLE__
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+#else
 	DestroyWindow(hwnd);
 	UnregisterClass(wc.lpszClassName, wc.hInstance);
+#endif
+    ImGui::DestroyContext();
 
 	llvm::llvm_shutdown();
 
 	cs_close(&handle);
+#ifndef __arm64__
 	cs_close(&handle32);
+#endif
 
 	return EXIT_SUCCESS;
 }
 
+#ifdef __APPLE__
+
+#else
 #define GET_X_LPARAM(lp)    ((int)(short)LOWORD(lp))
 #define GET_Y_LPARAM(lp)    ((int)(short)HIWORD(lp))
 
@@ -419,3 +926,4 @@ LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 	}
 	return DefWindowProc(hwnd, msg, wparam, lparam);
 }
+#endif
